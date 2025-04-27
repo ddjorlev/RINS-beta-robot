@@ -32,6 +32,11 @@ import os
 import subprocess
 from datetime import datetime
 
+import math
+from sensor_msgs.msg import LaserScan
+from rclpy.duration import Duration
+
+
 @dataclass
 class RGBDetection:
     stamp: rclpy.time.Time
@@ -50,7 +55,8 @@ class FaceData:
         self.normal = normal      # numpy array [x, y, z]
         self.is_new = is_new      # Flag to track if this is a newly detected face
         self.last_seen = time.time()
-        
+      
+
     def update_position(self, new_position, new_normal, smoothing_factor=0.3):
         """Update position with smoothing"""
         self.position = (1 - smoothing_factor) * self.position + smoothing_factor * new_position
@@ -110,7 +116,10 @@ class DetectFaces(Node):
         self.detection_color = (0, 0, 255)
         
         self.bridge = CvBridge()
-        self.model = YOLO("yolov8n.pt")
+        # self.model = YOLO("yolov8n.pt")
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        # Optional: You can also use haarcascade_fullbody.xml for full body detection
+        self.body_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fullbody.xml')
         
         # Message synchronization
         self.rgb_buffer = deque(maxlen=30)  # Store recent RGB detections
@@ -134,6 +143,13 @@ class DetectFaces(Node):
             Float32MultiArray, 
             '/person_transform_data', 
             QoSReliabilityPolicy.BEST_EFFORT    
+        )
+
+        self.lidar_sub = self.create_subscription(
+            LaserScan, 
+            "/scan", 
+            self.lidar_callback, 
+            qos_profile_sensor_data
         )
 
 
@@ -281,51 +297,216 @@ class DetectFaces(Node):
         # Publish the array
         self.positions_pub.publish(pose_array)
         self.get_logger().debug(f"Published {len(pose_array.poses)} people positions")
+
+    def transform_point_to_map(self, point_stamped):
+        """Helper method to transform a point to map frame"""
+        try:
+            timeout = Duration(seconds=0.1)
+            time_now = rclpy.time.Time()
+            trans = self.tf_buffer.lookup_transform("map", point_stamped.header.frame_id, time_now, timeout)
+            map_point = tfg.do_transform_point(point_stamped, trans)
+            return map_point
+        except Exception as e:
+            self.get_logger().warn(f"Transform failed: {e}")
+            return None
         
+    def lidar_callback(self, data):
+        """Process lidar scan data for detected faces"""
+        if not self.rgb_buffer or not hasattr(self, 'faces') or not self.faces:
+            return
         
+        # Use the most recent RGB detection
+        latest_rgb = self.rgb_buffer[-1]
+        
+        # Constants for camera parameters
+        cx = 188.68125915527344
+        fx = 306.00787353515625
+
+        for face_idx, (cx_face, cy_face, width, height) in enumerate(latest_rgb.faces):
+            # Calculate center and right edge of face
+            x = cx_face
+            r = cx_face + width//2  # Right edge x-coordinate
+            
+            dx = 1.0
+            dy = -(x - cx) / fx
+            camera_angle = math.atan2(dy, dx)
+            target_angle = -math.pi / 2 + camera_angle
+            
+            # Ensure index is within bounds
+            index = int((target_angle - data.angle_min) / data.angle_increment)
+            if index < 0 or index >= len(data.ranges):
+                self.get_logger().warn(f"Index {index} out of range for face {face_idx}")
+                continue
+                
+            angle = data.angle_min + index * data.angle_increment
+            depth = data.ranges[index]
+            
+            # Skip invalid measurements
+            if not math.isfinite(depth):
+                self.get_logger().warn(f"Invalid depth for face {face_idx}")
+                continue
+                
+            x_centre = depth * math.cos(angle)
+            y_centre = depth * math.sin(angle)
+
+            # Calculate position for right edge of face
+            dy = -(r - cx) / fx
+            camera_angle = math.atan2(dy, dx)
+            target_angle = -math.pi / 2 + camera_angle
+            
+            index = int((target_angle - data.angle_min) / data.angle_increment)
+            if index < 0 or index >= len(data.ranges):
+                self.get_logger().warn(f"Right edge index {index} out of range for face {face_idx}")
+                continue
+                
+            angle = data.angle_min + index * data.angle_increment
+            depth = data.ranges[index]
+            
+            if not math.isfinite(depth):
+                self.get_logger().warn(f"Invalid depth for right edge of face {face_idx}")
+                continue
+                
+            x_right = depth * math.cos(angle)
+            y_right = depth * math.sin(angle)
+
+            try:
+                # Create point for center position
+                point_in_lidar = PointStamped()
+                point_in_lidar.header.frame_id = 'rplidar_link'
+                point_in_lidar.header.stamp = self.get_clock().now().to_msg()
+                point_in_lidar.point.x = x_centre
+                point_in_lidar.point.y = y_centre
+                point_in_lidar.point.z = 0.0
+
+                # Transform center point to map frame
+                map_point = self.transform_point_to_map(point_in_lidar)
+                if map_point is None:
+                    continue
+
+                # Create point for right edge position
+                point_in_lidar = PointStamped()
+                point_in_lidar.header.frame_id = 'rplidar_link'
+                point_in_lidar.header.stamp = self.get_clock().now().to_msg()
+                point_in_lidar.point.x = x_right
+                point_in_lidar.point.y = y_right
+                point_in_lidar.point.z = 0.0
+
+                # Transform right edge point to map frame
+                map_point_right = self.transform_point_to_map(point_in_lidar)
+                if map_point_right is None:
+                    continue
+
+                # Calculate normal vector (person's orientation)
+                # Direction from center to right edge is perpendicular to facing direction
+                normal_x = -(map_point_right.point.y - map_point.point.y)
+                normal_y = map_point_right.point.x - map_point.point.x
+                
+                # Normalize the normal vector
+                norm = math.sqrt(normal_x**2 + normal_y**2)
+                if norm > 0:
+                    normal_x /= norm
+                    normal_y /= norm
+                else:
+                    # Default normal if we can't calculate
+                    normal_x, normal_y = 1.0, 0.0
+                    
+                normal = np.array([normal_x, normal_y, 0.0])
+                center_3d = np.array([map_point.point.x, map_point.point.y, map_point.point.z])
+                
+                # Check if this face has been seen before
+                matched_face_id = None
+                for face_id, face_data in self.persistent_faces.items():
+                    distance = np.linalg.norm(center_3d[:2] - face_data.position[:2])  # Compare 2D position (x,y)
+                    if distance < self.face_distance_threshold:
+                        matched_face_id = face_id
+                        # Update the position of the seen face
+                        face_data.update_position(center_3d, normal)
+                        break
+                
+                # If no match was found, add a new face
+                if matched_face_id is None:
+                    new_face_id = self.next_face_id
+                    self.next_face_id += 1
+                    self.persistent_faces[new_face_id] = FaceData(
+                        face_id=new_face_id, 
+                        position=center_3d, 
+                        normal=normal,
+                        is_new=True
+                    )
+                    self.get_logger().info(f"New face detected! ID: {new_face_id}, Position: {center_3d}, Normal: {normal}")
+                    self.publish_transform_data(center_3d, normal)
+                    
+                    # Say greeting when new face is detected
+                    self.say_greeting()
+                else:
+                    self.get_logger().debug(f"Updated face ID: {matched_face_id}, Position: {center_3d}")
+
+            except Exception as e:
+                self.get_logger().warn(f"Processing face {face_idx} failed: {e}")    
+
     def rgb_callback(self, data):
-        """Process RGB image to detect faces/people"""
+        """Process RGB image to detect faces/people using Haar Cascade"""
         try:
             stamp = data.header.stamp
             cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
             
-            # Detect people (class 0 in COCO)
-            results = self.model.predict(cv_image, imgsz=(256, 320), show=False, verbose=False, classes=[0], device=self.device)
+            # Convert to grayscale for Haar detection
+            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
             
-            faces = []
+            # Detect faces
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(30, 30),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            
+            # If no faces found, try to detect bodies
+            if len(faces) == 0:
+                bodies = self.body_cascade.detectMultiScale(
+                    gray,
+                    scaleFactor=1.05,
+                    minNeighbors=3,
+                    minSize=(80, 200),
+                    flags=cv2.CASCADE_SCALE_IMAGE
+                )
+                
+                # Convert bodies to same format as faces
+                faces = bodies
+            
+            # Process detections
+            detected_faces = []
             detect_image = cv_image.copy()
             
-            for det in results:
-                bbox = det.boxes.xyxy
-                if bbox.nelement() == 0:
-                    continue
+            for (x, y, w, h) in faces:
+                cx = x + w // 2
+                cy = y + h // 2
                 
-                self.get_logger().debug("Person detected")
+                # Store detection with center and size
+                detected_faces.append((cx, cy, w, h))
                 
-                for i in range(len(bbox)):
-                    box = bbox[i]
-                    cx = int((box[0] + box[2]) / 2)
-                    cy = int((box[1] + box[3]) / 2)
-                    width = int(box[2] - box[0])
-                    height = int(box[3] - box[1])
-                    
-                    # Store detection with size information
-                    faces.append((cx, cy, width, height))
-                    
-                    # Visualize detection
-                    detect_image = cv2.rectangle(detect_image, 
-                                            (int(box[0]), int(box[1])), 
-                                            (int(box[2]), int(box[3])), 
-                                            self.detection_color, 2)
-                    detect_image = cv2.circle(detect_image, (cx, cy), 5, self.detection_color, -1)
+                # Visualize detection
+                detect_image = cv2.rectangle(detect_image, 
+                                    (x, y), 
+                                    (x + w, y + h), 
+                                    self.detection_color, 2)
+                detect_image = cv2.circle(detect_image, (cx, cy), 5, self.detection_color, -1)
+                
+            # Log detections
+            if detected_faces:
+                self.get_logger().debug(f"Detected {len(detected_faces)} people/faces")
             
             # Store detection in buffer
-            self.rgb_buffer.append(RGBDetection(stamp=stamp, faces=faces, image=detect_image))
+            self.rgb_buffer.append(RGBDetection(stamp=stamp, faces=detected_faces, image=detect_image))
             
-            # Try to find a matching point cloud in the buffer
+            # Process the detection (simplified from point cloud matching)
             self.process_synchronized_data()
             
+            cv2.namedWindow("Detections", cv2.WINDOW_NORMAL)
             cv2.imshow("Detections", detect_image)
+            cv2.waitKey(1)  # This is critical - without it the window won't update
+
             key = cv2.waitKey(1)
             if key == 27:  # ESC
                 self.get_logger().info("Exiting on user request")
@@ -341,8 +522,30 @@ class DetectFaces(Node):
         
         # Try to find a matching RGB detection in the buffer
         self.process_synchronized_data()
-    
+
     def process_synchronized_data(self):
+        """Process RGB detections with lidar data directly (no point cloud synchronization)"""
+        if not self.rgb_buffer:
+            return
+        
+        # Since lidar callback already processes data directly with the latest RGB detection,
+        # this function now simply manages the RGB buffer and periodic saving
+        
+        # Keep only the most recent RGB detection to reduce memory usage
+        # (we want to keep at least 1 for use by the lidar callback)
+        while len(self.rgb_buffer) > 1:
+            self.rgb_buffer.popleft()
+        
+        # Expose the faces from the RGB buffer to the lidar callback
+        if self.rgb_buffer and len(self.rgb_buffer) > 0:
+            latest_detection = self.rgb_buffer[-1]
+            self.faces = latest_detection.faces
+        
+        # Check if it's time to save faces
+        if time.time() - self.last_save_time > self.save_interval:
+            self.save_faces()
+    
+    def process_synchronized_data1(self):
         """Process pairs of time-synchronized RGB and point cloud data"""
         if not self.rgb_buffer or not self.pointcloud_buffer:
             return

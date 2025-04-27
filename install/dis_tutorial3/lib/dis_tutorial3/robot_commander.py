@@ -311,7 +311,7 @@ def main(args=None):
     #     rc.undock()
     
     waypoints = [
-        # (0.0, 0.0, 1.57),  # Starting position         
+        # (-1.0, 0.61, 1.57),  # Starting position         
         (-1.74, 0.99, 1.57),          
         (-0.913, 2.44, 1.57),       
         (-1.99, 2.99, 1.57)          
