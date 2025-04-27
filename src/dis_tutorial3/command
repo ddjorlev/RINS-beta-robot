@@ -1,0 +1,22 @@
+ 
+ros2 topic list
+ros2 daemon stop; ros2 daemon start
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+ping 192.168.0.13
+source install/setup.bash
+ros2 topic echo /odom
+source /opt/ros/humble/setup.bash
+
+ros2 launch turtlebot4_viz view_robot.launch.py
+ros2 launch dis_tutorial3 nav2.launch.py
+
+
+
+ros2 launch turtlebot4_ignition_bringup         turtlebot4_ignition.launch.py nav2:=true slam:=false localization:=true rviz:=true
+
+    ros2 launch dis_tutorial3 localization.launch.py map:=/ home/beta/RINS-beta-robot/map/map.yaml use_sim_time:=false
+
+ros2 launch turtlebot4_navigation localization.launch.py map:=/home/beta/RINS-beta-robot/map/map.yaml rviz:=true
+
+ros2 launch turtlebot4_navigation nav2.launch.py \
+    map:=/home/beta/RINS-beta-robot/map/map.yaml
