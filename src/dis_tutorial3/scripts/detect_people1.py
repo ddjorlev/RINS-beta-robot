@@ -229,7 +229,7 @@ class DetectFaces(Node):
             faces = self.face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.1,
-                minNeighbors=5,
+                minNeighbors=10,
                 minSize=(30, 30),
                 flags=cv2.CASCADE_SCALE_IMAGE
             )
@@ -445,8 +445,8 @@ class DetectFaces(Node):
                             self.calculate_and_store_goal_position(self.persistent_faces[face_id])
                             
                             # Say greeting for the first face only
-                            if len(self.persistent_faces) == 1:
-                                self.say_greeting()
+                            # if len(self.persistent_faces) == 1:
+                            #     self.say_greeting()
                         
                         break
                 

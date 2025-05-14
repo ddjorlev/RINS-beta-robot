@@ -23,6 +23,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Quaternion, PoseStamped, PoseWithCovarianceStamped
 from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import Spin, NavigateToPose
+from nav_msgs.msg import Path
 from turtle_tf2_py.turtle_tf2_broadcaster import quaternion_from_euler
 from visualization_msgs.msg import MarkerArray
 
@@ -520,12 +521,38 @@ def main(args=None):
     # if rc.is_docked:
     #     rc.undock()
     
-    waypoints = [
-        # (-1.0, 0.61, 1.57),  # Starting position         
-        (-1.74, 0.99, 1.57),          
-        (-0.913, 2.44, 1.57),       
-        (-1.99, 2.99, 1.57)          
-    ]
+    # Read waypoints from the /global_path topic
+    #     waypoints = [
+    #     # (-1.0, 0.61, 1.57),  # Starting position         
+    #     (-1.74, 0.99, 1.57),          
+    #     (-0.913, 2.44, 1.57),       
+    #     (-1.99, 2.99, 1.57)          
+    # ]
+    waypoints = []
+
+    def global_path_callback(msg):
+        """Callback to process the global path and extract waypoints."""
+        nonlocal waypoints
+        waypoints = [(pose.pose.position.x, pose.pose.position.y, 1.57) for pose in msg.poses]
+        rc.info(f"Received {len(waypoints)} waypoints from /global_path")
+
+    # Subscribe to the /global_path topic
+    global_path_sub = rc.create_subscription(
+        Path,
+        '/global_path',
+        global_path_callback,
+        QoSProfile(
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+    )
+
+    # Wait until waypoints are received
+    rc.info("Waiting for waypoints from /global_path...")
+    while not waypoints:
+        rclpy.spin_once(rc, timeout_sec=0.5)
     
     rc.info("Starting navigation through waypoints...")
     
@@ -556,6 +583,7 @@ def main(args=None):
                 # Say greeting
                 rc.info("Reached person! Saying greeting...")
                 rc.sayGreeting()
+
                 
                 # Mark this face as greeted
                 rc.greeted_faces.add(rc.person_to_greet['face_id'])
