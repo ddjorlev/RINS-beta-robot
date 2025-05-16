@@ -19,6 +19,9 @@ import rclpy.duration
 import time
 from collections import deque
 from dataclasses import dataclass
+from sensor_msgs.msg import CompressedImage
+
+from rclpy.qos import qos_profile_sensor_data
 
 @dataclass
 class RingData:
@@ -35,9 +38,9 @@ class RingDetector(Node):
         self.bridge = CvBridge()
         
         # Subscriptions
-        self.image_sub = self.create_subscription(Image, "/oakd/rgb/preview/image_raw", self.image_callback, 1)
-        self.depth_sub = self.create_subscription(Image, "/oakd/rgb/preview/depth", self.depth_callback, 1)
-        self.pointcloud_sub = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pointcloud_callback, 1)
+        self.image_sub = self.create_subscription(Image, "/oak/rgb/image_raw", self.image_callback, 1)
+        self.depth_sub = self.create_subscription(CompressedImage, "/oak/stereo/image_raw/compressedDepth", self.depth_callback, qos_profile_sensor_data)
+        # self.pointcloud_sub = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pointcloud_callback, 1)
         
         # Publishers
         self.marker_pub = self.create_publisher(MarkerArray, "/ring_markers", 10)
@@ -54,10 +57,10 @@ class RingDetector(Node):
         self.rings = {}  # Dictionary of detected rings by position hash
         
         # Parameters
-        self.marker_lifetime = 5.0  # Marker lifetime in seconds
+        self.marker_lifetime = 0.0  # Marker lifetime in seconds
         self.ring_position_threshold = 0.3  # meters, threshold for considering a ring as the same
         # self.ring_timeout = 30.0  # seconds before removing a ring from tracking
-        self.announce_cooldown = 5.0  # minimum seconds between announcing the same ring
+        self.announce_cooldown = 2.0  # minimum seconds between announcing the same ring
         
         # Create timers
         self.marker_timer = self.create_timer(0.5, self.publish_ring_markers)
@@ -83,8 +86,29 @@ class RingDetector(Node):
 
     def depth_callback(self, data):
         try:
-            # Convert depth image
-            depth_image = self.bridge.imgmsg_to_cv2(data, "32FC1")
+            # self.get_logger().info(f"Depth image received, {len(data.data)} bytes")
+            data1 = data.data.tobytes()
+            sig = b'\x89PNG\r\n\x1a\n'
+            idx = data1.find(sig)
+            if idx == -1:
+                self.get_logger().warn("PNG signature not found in depth image data")
+                return
+
+            png = data1[idx:]
+            arr = np.frombuffer(png, dtype=np.uint8)
+            depth_image = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0  # Decode the PNG image and convert to meters
+
+            # Log basic information
+            # self.get_logger().info(f"Depth image received, len: {len(data.data)} bytes")
+            # self.get_logger().info(f"Depth image format: {data.format}")
+            
+            # This is a PNG compressed depth image
+            # Convert to numpy array for processing
+            # np_arr = np.frombuffer(data.data, np.uint8)
+            # self.get_logger().info(f"Depth image array shape: {np_arr.shape}")
+            # depth_image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0  # Decode the PNG image and convert to meters
+            # # Decode the PNG image
+            cv2.imshow("Depth window", depth_image)
             self.depth_data = depth_image  # Store for ring detection
             self.depth_height, self.depth_width = depth_image.shape
 
@@ -107,15 +131,9 @@ class RingDetector(Node):
             # Display the depth map
             cv2.imshow("Depth window", depth_colormap)
             cv2.waitKey(1)
-
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge Error: {e}")
-        except Exception as e:
-            self.get_logger().error(f"Unexpected error in depth callback: {e}")
-
-    def pointcloud_callback(self, data):
-        """Store the latest point cloud data"""
-        self.pointcloud_data = data
+      
 
     def announce_ring_color(self, color_name):
         """Announce the detected ring color using TTS"""
@@ -138,7 +156,7 @@ class RingDetector(Node):
         try:
             # Create PointStamped object
             point_stamped = PointStamped()
-            point_stamped.header.frame_id = "base_link"
+            point_stamped.header.frame_id = "oakd_rgb_camer_frame"
             point_stamped.header.stamp = self.get_clock().now().to_msg()
             point_stamped.point.x = float(point_3d[0])
             point_stamped.point.y = float(point_3d[1])
@@ -147,7 +165,7 @@ class RingDetector(Node):
             # Get latest transform
             transform = self.tf_buffer.lookup_transform(
                 "map", 
-                "base_link",
+                "oakd_rgb_camera_optical_frame",
                 rclpy.time.Time(),  # Get latest transform
                 rclpy.duration.Duration(seconds=1.0)
             )
@@ -386,6 +404,20 @@ class RingDetector(Node):
 
         return "", (128, 128, 128)
 
+    def get_3d_position_from_depth(self, x, y, depth_value):
+        """Calculate 3D position from depth value and camera intrinsics."""
+        # Camera intrinsic parameters (if not already defined in __init__)
+        fx = 306.00787353515625
+        fy = 306.00787353515625
+        cx = 188.68125915527344
+        cy = 105.0
+        
+        z = depth_value  # Depth value (already in meters)
+        x_3d = (x - cx) * z / fx
+        y_3d = (y - cy) * z / fy
+
+        return np.array([-x_3d, -y_3d, z])  # Convert to camera frame (Z forward, X right, Y down)
+
     def image_callback(self, msg):
         try:
             # Convert the ROS image message to an OpenCV image
@@ -448,26 +480,44 @@ class RingDetector(Node):
                                     color_bgr,
                                     2)
                         
-                        # Get 3D position from point cloud
-                        position_3d = self.get_point_cloud_position(x, y, r)
-                        
-                        if position_3d is not None:
-                            # Transform to map frame
-                            map_position = self.transform_point_to_map(position_3d)
-                            
-                            if map_position is not None:
-                                self.get_logger().info(
-                                    f"{color_name.upper()} hollow ring detected at "
-                                    f"({x}, {y}) with radius {r}, map position: {map_position}"
-                                )
+                        # Get depth value from depth map for the ring center
+                        try:
+                            # Make sure x and y are within depth map bounds
+                            if 0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]:
+                                depth_value = depth_map[y + r, x]
                                 
-                                # Store the ring data
-                                self.update_ring(map_position, r, color_name, color_bgr)
-                        else:
-                            self.get_logger().info(
-                                f"{color_name.upper()} hollow ring detected at "
-                                f"({x}, {y}) with radius {r}, but no 3D position determined"
-                            )
+                                # Check if depth value is valid
+                                if depth_value > 0 and depth_value < 5.0:  # Reasonable depth range (0-5m)
+                                    # Calculate 3D position from 2D point and depth
+                                    position_3d = self.get_3d_position_from_depth(x, y, depth_value)
+                                    
+                                    self.get_logger().info(
+                                        f"Ring at ({x},{y}) with depth {depth_value:.2f}m, 3D pos: {position_3d}"
+                                    )
+                                    
+                                    # Transform to map frame
+                                    map_position = self.transform_point_to_map(position_3d)
+                                    self.get_logger().info(
+                                        f"Transformed ring position to map frame: {map_position}"
+                                    )
+                                    if map_position is not None:
+                                        self.get_logger().info(
+                                            f"{color_name.upper()} hollow ring detected at "
+                                            f"({x}, {y}) with radius {r}, map position: {map_position}, depth: {depth_value:.2f}m"
+                                        )
+                                        
+                                        # Store the ring data
+                                        self.update_ring(map_position, r, color_name, color_bgr)
+                                else:
+                                    self.get_logger().warn(
+                                        f"Invalid depth value at ({x},{y}): {depth_value}"
+                                    )
+                            else:
+                                self.get_logger().warn(
+                                    f"Point ({x},{y}) outside depth map bounds: {depth_map.shape}"
+                                )
+                        except Exception as e:
+                            self.get_logger().error(f"Error getting depth for point ({x},{y}): {e}")
                     else:
                         # Draw non-hollow circles in gray
                         cv2.circle(frame, (x, y), r, (128, 128, 128), 1)
@@ -480,6 +530,8 @@ class RingDetector(Node):
             self.get_logger().error(f"CV Bridge Error: {e}")
         except Exception as e:
             self.get_logger().error(f"Unexpected error: {e}")
+            import traceback
+            self.get_logger().error(traceback.format_exc())
 
     def update_ring(self, position, radius_px, color_name, color_bgr):
         """Update ring data in storage, create new entry if needed"""

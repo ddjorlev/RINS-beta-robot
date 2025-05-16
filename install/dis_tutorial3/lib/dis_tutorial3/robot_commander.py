@@ -74,7 +74,7 @@ class RobotCommander(Node):
         self.current_waypoint_idx = 0
         self.tts_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
                                            "speak.py")  # Use direct path from current script
-        self.greeting_text = "Hello there! I am your robot assistant."
+        self.greeting_text = "Hello there!"
         self.current_task = None  # None, 'waypoint', or 'greeting'
  
         # ROS2 subscribers
