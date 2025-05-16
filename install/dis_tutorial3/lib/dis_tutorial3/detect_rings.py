@@ -156,7 +156,7 @@ class RingDetector(Node):
         try:
             # Create PointStamped object
             point_stamped = PointStamped()
-            point_stamped.header.frame_id = "oakd_rgb_camer_frame"
+            point_stamped.header.frame_id = "oakd_rgb_camera_frame"
             point_stamped.header.stamp = self.get_clock().now().to_msg()
             point_stamped.point.x = float(point_3d[0])
             point_stamped.point.y = float(point_3d[1])
@@ -368,9 +368,9 @@ class RingDetector(Node):
                 return "red", (0, 0, 255)
                 
         # YELLOW detection (improved)
-        if (15 <= h <= 35) and b_val > 128 and a > 128:
-            if r > b + 10 and g > b + 10:  # Both R and G channels are stronger than B
-                return "yellow", (0, 255, 255)
+        # if (15 <= h <= 35) and b_val > 128 and a > 128:
+        #     if r > b + 10 and g > b + 10:  # Both R and G channels are stronger than B
+        #         return "yellow", (0, 255, 255)
         
         # Fallback to RGB ratio analysis with more robust thresholds
         max_channel = max(r, g, b)
@@ -391,7 +391,7 @@ class RingDetector(Node):
                 return "green", (0, 255, 0)
             elif r_ratio > 0.4 and r > b + 10:
                 if r_ratio > 0.5 and g_ratio > 0.5 and g > b + 10:
-                    return "yellow", (0, 255, 255)
+                    return "", (128, 128, 128)
                 return "red", (0, 0, 255)
         
         # Final check for dark colors before returning unknown
@@ -545,26 +545,20 @@ class RingDetector(Node):
         
         current_time = time.time()
         
-        # If matching ring found, update its data
+        # If matching ring found, update its data but don't announce or create new markers
         if matched_hash:
             # Update position with some smoothing
             smoothing = 0.3
             self.rings[matched_hash].position = (1 - smoothing) * self.rings[matched_hash].position + smoothing * position
             self.rings[matched_hash].last_seen = current_time
             
-            # Check if we should announce this ring again (only if color changed or sufficient time passed)
-            if (self.rings[matched_hash].color_name != color_name or 
-               (not self.rings[matched_hash].announced) or
-               (current_time - self.rings[matched_hash].last_seen > self.announce_cooldown)):
-                self.announce_ring_color(color_name)
-                self.rings[matched_hash].announced = True
-            
-            # Update color if it changed
+            # Only announce if color changed (this is a significantly different observation)
             if self.rings[matched_hash].color_name != color_name:
+                self.announce_ring_color(color_name)
                 self.rings[matched_hash].color_name = color_name
                 self.rings[matched_hash].color_bgr = color_bgr
         else:
-            # Create new ring entry
+            # This is a new ring - create new entry and announce it
             pos_hash = self.position_hash(position)
             self.rings[pos_hash] = RingData(
                 position=position,
@@ -572,11 +566,10 @@ class RingDetector(Node):
                 color_name=color_name,
                 color_bgr=color_bgr,
                 last_seen=current_time,
-                announced=False
+                announced=True  # Mark as announced when created
             )
             # Announce new ring
             self.announce_ring_color(color_name)
-            self.rings[pos_hash].announced = True
 
     def cleanup_old_rings(self):
         """Remove rings that haven't been seen recently"""
@@ -594,13 +587,28 @@ class RingDetector(Node):
             self.get_logger().debug(f"Removed {len(keys_to_remove)} old rings")
 
     def publish_ring_markers(self):
-        """Publish markers for all tracked rings"""
+        """Publish markers for all tracked rings, avoiding duplicates"""
         if not self.rings:
             return
             
         marker_array = MarkerArray()
         
+        # Track positions we've seen to avoid duplicates
+        published_positions = set()
+        
         for ring_hash, ring_data in self.rings.items():
+            # Create position key for deduplication (rounded to cm precision)
+            pos_key = (round(ring_data.position[0], 2), 
+                    round(ring_data.position[1], 2), 
+                    round(ring_data.position[2], 2))
+            
+            # Skip if we've already published a marker at this position
+            if pos_key in published_positions:
+                continue
+                
+            # Add to set of published positions
+            published_positions.add(pos_key)
+            
             # Ring position marker (sphere)
             ring_marker = Marker()
             ring_marker.header.frame_id = "map"
