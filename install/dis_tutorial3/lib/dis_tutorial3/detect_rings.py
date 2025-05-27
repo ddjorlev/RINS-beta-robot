@@ -156,30 +156,65 @@ class RingDetector(Node):
             return False  # If we don't have LiDAR data, don't filter out
         
         try:
-            # Convert the 3D position to polar coordinates (in LiDAR frame)
-            # First transform to map frame if not already
-            if position_3d is None:
-                return True  # Invalid position, consider it beyond LiDAR
+            # Transform the ring position to the LiDAR frame
+            try:
+                # Get latest transform from map to LiDAR frame
+                transform = self.tf_buffer.lookup_transform(
+                    "laser",  # LiDAR frame
+                    "map",    # Map frame
+                    rclpy.time.Time(),  # Get latest transform
+                    rclpy.duration.Duration(seconds=1.0)
+                )
+                
+                # Create point in map frame
+                point_in_map = PointStamped()
+                point_in_map.header.frame_id = "map"
+                point_in_map.header.stamp = self.get_clock().now().to_msg()
+                point_in_map.point.x = float(position_3d[0])
+                point_in_map.point.y = float(position_3d[1])
+                point_in_map.point.z = float(position_3d[2])
+                
+                # Transform to LiDAR frame
+                point_in_lidar = tfg.do_transform_point(point_in_map, transform)
+                
+                # Calculate angle in lidar frame
+                x_lidar = point_in_lidar.point.x
+                y_lidar = point_in_lidar.point.y
+                
+                # Calculate angle to the point in lidar frame
+                angle = np.arctan2(y_lidar, x_lidar)
+                
+            except TransformException as e:
+                self.get_logger().warn(f"Could not transform point to lidar frame: {e}")
+                # Use fallback calculation directly in map frame
+                # Calculate angle in map frame (assuming robot and lidar center at same position)
+                angle = np.arctan2(position_3d[1], position_3d[0])
             
-            # Calculate angle in LiDAR frame
-            angle = np.arctan2(position_3d[1], position_3d[0])
-            
-            # Normalize angle to be within the LiDAR's range
+            # Normalize angle to lidar's range
             while angle < self.lidar_angle_min:
                 angle += 2 * np.pi
             while angle > self.lidar_angle_min + 2 * np.pi:
                 angle -= 2 * np.pi
-            
-            # Find the closest LiDAR reading index
+            max_depth = np.max(self.lidar_data)  # Get maximum lidar reading
+            curr_lidar = self.lidar_data[0]
+            # Find the index of the lidar ray closest to our angle
             index = int((angle - self.lidar_angle_min) / self.lidar_angle_increment)
+            
             if 0 <= index < len(self.lidar_data):
                 lidar_distance = self.lidar_data[index]
-                # Calculate the distance to the 3D point (in 2D plane only, ignoring height)
-                point_distance = np.sqrt(position_3d[0]**2 + position_3d[1]**2)
                 
-                # Check if point is beyond LiDAR reading
-                if point_distance > lidar_distance and lidar_distance > 0.1:  # Ensure valid LiDAR reading
-                    self.get_logger().info(f"Ring at distance {point_distance:.2f}m is beyond LiDAR reading of {lidar_distance:.2f}m")
+                # Calculate the distance to the 3D point (in 2D plane)
+                # If we have the point in lidar frame, use that distance
+                if 'x_lidar' in locals():
+                    point_distance = np.sqrt(x_lidar**2 + y_lidar**2)
+                else:
+                    # Fallback to map frame distance
+                    point_distance = np.sqrt(position_3d[0]**2 + position_3d[1]**2)
+                
+                # Check if point is beyond lidar reading - using MAXIMUM reading
+                # if lidar_distance > 0.1 and point_distance > lidar_distance:  # Ensure valid lidar reading
+                if point_distance > curr_lidar * 1.0:  # Use a threshold to avoid noise
+                    self.get_logger().info(f"Ring at distance {point_distance:.2f}m is beyond lidar reading of {lidar_distance:.2f}m in direction {angle:.2f}rad")
                     return True
             
             return False

@@ -555,6 +555,8 @@ def main(args=None):
         rclpy.spin_once(rc, timeout_sec=0.5)
     
     rc.info("Starting navigation through waypoints...")
+
+    waypoints.append(waypoints[0])  # Add the first waypoint again to return to start
     
     # Navigate to each waypoint, but check for people between waypoints
     rc.current_waypoint_idx = 0
