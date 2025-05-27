@@ -16,7 +16,7 @@ class SkeletonizedPath(Node):
         super().__init__('skeletonized_path')
 
         # Declare parameters
-        self.declare_parameter('map_image_path', '/home/beta/RINS-beta-robot/map/map.pgm')
+        self.declare_parameter('map_image_path', '/home/dimitar/Desktop/RINS-beta-robot/map/map.pgm')
         self.declare_parameter('path_topic', '/global_path')
         self.declare_parameter('dilation_pixels', 5)
         self.declare_parameter('resolution', 0.05)  # Map resolution in meters/pixel

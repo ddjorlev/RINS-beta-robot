@@ -20,6 +20,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import LaserScan
 
 from rclpy.qos import qos_profile_sensor_data
 
@@ -41,7 +42,8 @@ class RingDetector(Node):
         self.image_sub = self.create_subscription(Image, "/oak/rgb/image_raw", self.image_callback, 1)
         self.depth_sub = self.create_subscription(CompressedImage, "/oak/stereo/image_raw/compressedDepth", self.depth_callback, qos_profile_sensor_data)
         # self.pointcloud_sub = self.create_subscription(PointCloud2, "/oakd/rgb/preview/depth/points", self.pointcloud_callback, 1)
-        
+        self.lidar_sub = self.create_subscription(LaserScan, "/scan", self.lidar_callback, qos_profile_sensor_data)
+
         # Publishers
         self.marker_pub = self.create_publisher(MarkerArray, "/ring_markers", 10)
         
@@ -55,6 +57,10 @@ class RingDetector(Node):
         self.depth_height = 0
         self.pointcloud_data = None
         self.rings = {}  # Dictionary of detected rings by position hash
+        
+        self.lidar_data = None
+        self.lidar_angle_min = 0.0
+        self.lidar_angle_increment = 0.0
         
         # Parameters
         self.marker_lifetime = 0.0  # Marker lifetime in seconds
@@ -119,7 +125,7 @@ class RingDetector(Node):
             depth_display = np.nan_to_num(depth_display, nan=0.0, posinf=0.0, neginf=0.0)
             
             # Clip the depth values to a reasonable range (e.g., 0 to 3 meters)
-            max_depth = 3.0  # meters
+            max_depth = 10.0  # meters
             depth_display = np.clip(depth_display, 0, max_depth)
             
             # Normalize to 0-255 range for visualization
@@ -133,7 +139,53 @@ class RingDetector(Node):
             cv2.waitKey(1)
         except CvBridgeError as e:
             self.get_logger().error(f"CV Bridge Error: {e}")
-      
+
+    def lidar_callback(self, msg):
+        """Process LiDAR scan data"""
+        try:
+            self.lidar_data = np.array(msg.ranges)
+            self.lidar_angle_min = msg.angle_min
+            self.lidar_angle_increment = msg.angle_increment
+            # self.get_logger().debug(f"Received LiDAR scan with {len(self.lidar_data)} points")
+        except Exception as e:
+            self.get_logger().error(f"Error processing LiDAR data: {e}")
+    
+    def is_beyond_lidar(self, position_3d):
+        """Check if the 3D position is beyond the LiDAR reading in that direction"""
+        if self.lidar_data is None:
+            return False  # If we don't have LiDAR data, don't filter out
+        
+        try:
+            # Convert the 3D position to polar coordinates (in LiDAR frame)
+            # First transform to map frame if not already
+            if position_3d is None:
+                return True  # Invalid position, consider it beyond LiDAR
+            
+            # Calculate angle in LiDAR frame
+            angle = np.arctan2(position_3d[1], position_3d[0])
+            
+            # Normalize angle to be within the LiDAR's range
+            while angle < self.lidar_angle_min:
+                angle += 2 * np.pi
+            while angle > self.lidar_angle_min + 2 * np.pi:
+                angle -= 2 * np.pi
+            
+            # Find the closest LiDAR reading index
+            index = int((angle - self.lidar_angle_min) / self.lidar_angle_increment)
+            if 0 <= index < len(self.lidar_data):
+                lidar_distance = self.lidar_data[index]
+                # Calculate the distance to the 3D point (in 2D plane only, ignoring height)
+                point_distance = np.sqrt(position_3d[0]**2 + position_3d[1]**2)
+                
+                # Check if point is beyond LiDAR reading
+                if point_distance > lidar_distance and lidar_distance > 0.1:  # Ensure valid LiDAR reading
+                    self.get_logger().info(f"Ring at distance {point_distance:.2f}m is beyond LiDAR reading of {lidar_distance:.2f}m")
+                    return True
+            
+            return False
+        except Exception as e:
+            self.get_logger().error(f"Error in is_beyond_lidar: {e}")
+            return False  # In case of error, don't filter out
 
     def announce_ring_color(self, color_name):
         """Announce the detected ring color using TTS"""
@@ -404,19 +456,56 @@ class RingDetector(Node):
 
         return "", (128, 128, 128)
 
-    def get_3d_position_from_depth(self, x, y, depth_value):
-        """Calculate 3D position from depth value and camera intrinsics."""
-        # Camera intrinsic parameters (if not already defined in __init__)
+    def get_3d_position_from_depth(self, x, y, r, depth_map):
+        """Calculate 3D position from depth value and camera intrinsics, using perimeter points."""
+        # Camera intrinsic parameters
         fx = 306.00787353515625
         fy = 306.00787353515625
-        cx = 188.68125915527344
-        cy = 105.0
+        cx = 188.68129615527344
+        cy = 113.89129638671875  # Updated to match the camera_info topic
         
-        z = depth_value  # Depth value (already in meters)
-        x_3d = (x - cx) * z / fx
-        y_3d = (y - cy) * z / fy
-
-        return np.array([-x_3d, -y_3d, z])  # Convert to camera frame (Z forward, X right, Y down)
+        # Sample points around the ring perimeter
+        num_points = 8
+        perimeter_depths = []
+        perimeter_points = []
+        
+        for angle in np.linspace(0, 2*np.pi, num_points, endpoint=False):
+            px = int(x + r * np.cos(angle))
+            py = int(y + r * np.sin(angle))
+            
+            # Check if point is within image bounds
+            if 0 <= px < depth_map.shape[1] and 0 <= py < depth_map.shape[0]:
+                depth = depth_map[py, px]
+                if depth > 0 and np.isfinite(depth):
+                    perimeter_depths.append(depth)
+                    perimeter_points.append((px, py, depth))
+        
+        # If we have enough points, use the minimum depth
+        if len(perimeter_depths) >= 3:
+            # Find the minimum depth value and its associated point
+            min_depth = min(perimeter_depths)
+            min_idx = perimeter_depths.index(min_depth)
+            px, py, depth = perimeter_points[min_idx]
+            
+            # Calculate 3D position using the minimum depth point
+            z = depth  # Depth value (already in meters)
+            x_3d = (px - cx) * z / fx
+            y_3d = (py - cy) * z / fy
+            
+            self.get_logger().info(f"Using minimum perimeter depth: {min_depth:.3f}m at point ({px},{py})")
+            return np.array([-x_3d, -y_3d, z])  # Convert to camera frame
+        
+        # Fallback: use center point if perimeter sampling failed
+        center_depth = depth_map[y, x]
+        if center_depth > 0 and np.isfinite(center_depth):
+            z = center_depth
+            x_3d = (x - cx) * z / fx
+            y_3d = (y - cy) * z / fy
+            self.get_logger().warn(f"Falling back to center depth: {z:.3f}m (insufficient perimeter points)")
+            return np.array([-x_3d, -y_3d, z])
+            
+        self.get_logger().error("Could not determine depth for ring")
+        return None
 
     def image_callback(self, msg):
         try:
@@ -482,40 +571,35 @@ class RingDetector(Node):
                         
                         # Get depth value from depth map for the ring center
                         try:
-                            # Make sure x and y are within depth map bounds
-                            if 0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]:
-                                depth_value = depth_map[y + r, x]
+                            # Make sure depth map is available
+                            if depth_map is not None:
+                                # Calculate 3D position using perimeter points
+                                position_3d = self.get_3d_position_from_depth(x, y, r, depth_map)
                                 
-                                # Check if depth value is valid
-                                if depth_value > 0 and depth_value < 5.0:  # Reasonable depth range (0-5m)
-                                    # Calculate 3D position from 2D point and depth
-                                    position_3d = self.get_3d_position_from_depth(x, y, depth_value)
-                                    
-                                    self.get_logger().info(
-                                        f"Ring at ({x},{y}) with depth {depth_value:.2f}m, 3D pos: {position_3d}"
-                                    )
-                                    
+                                if position_3d is not None:
                                     # Transform to map frame
                                     map_position = self.transform_point_to_map(position_3d)
-                                    self.get_logger().info(
-                                        f"Transformed ring position to map frame: {map_position}"
-                                    )
+                                    
                                     if map_position is not None:
-                                        self.get_logger().info(
-                                            f"{color_name.upper()} hollow ring detected at "
-                                            f"({x}, {y}) with radius {r}, map position: {map_position}, depth: {depth_value:.2f}m"
-                                        )
-                                        
-                                        # Store the ring data
-                                        self.update_ring(map_position, r, color_name, color_bgr)
+                                        # Check if the point is behind LiDAR reading
+                                        if not self.is_beyond_lidar(map_position):
+                                            self.get_logger().info(
+                                                f"{color_name.upper()} hollow ring detected at "
+                                                f"({x}, {y}) with radius {r}, map position: {map_position}"
+                                            )
+                                            
+                                            # Store the ring data
+                                            self.update_ring(map_position, r, color_name, color_bgr)
+                                        else:
+                                            self.get_logger().info(
+                                                f"Ring at ({x}, {y}) ignored - beyond LiDAR reading"
+                                            )
+                                    else:
+                                        self.get_logger().warn(f"Could not transform point to map frame")
                                 else:
-                                    self.get_logger().warn(
-                                        f"Invalid depth value at ({x},{y}): {depth_value}"
-                                    )
+                                    self.get_logger().warn(f"Could not determine 3D position for ring at ({x},{y})")
                             else:
-                                self.get_logger().warn(
-                                    f"Point ({x},{y}) outside depth map bounds: {depth_map.shape}"
-                                )
+                                self.get_logger().warn("Depth map is not available")
                         except Exception as e:
                             self.get_logger().error(f"Error getting depth for point ({x},{y}): {e}")
                     else:
