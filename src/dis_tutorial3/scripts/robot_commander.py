@@ -74,7 +74,7 @@ class RobotCommander(Node):
         self.current_waypoint_idx = 0
         self.tts_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
                                            "speak.py")  # Use direct path from current script
-        self.greeting_text = "Hello there!"
+        self.greeting_text = "Hi female!"
         self.current_task = None  # None, 'waypoint', or 'greeting'
  
         # ROS2 subscribers
@@ -556,7 +556,7 @@ def main(args=None):
     
     rc.info("Starting navigation through waypoints...")
 
-    waypoints.append(waypoints[0])  # Add the first waypoint again to return to start
+    waypoints.append(waypoints[3])  # Add the first waypoint again to return to start
     
     # Navigate to each waypoint, but check for people between waypoints
     rc.current_waypoint_idx = 0
