@@ -213,7 +213,7 @@ class RingDetector(Node):
                 
                 # Check if point is beyond lidar reading - using MAXIMUM reading
                 # if lidar_distance > 0.1 and point_distance > lidar_distance:  # Ensure valid lidar reading
-                if point_distance > curr_lidar * 1.0:  # Use a threshold to avoid noise
+                if point_distance > max_depth * 1.0:  # Use a threshold to avoid noise
                     self.get_logger().info(f"Ring at distance {point_distance:.2f}m is beyond lidar reading of {lidar_distance:.2f}m in direction {angle:.2f}rad")
                     return True
             
@@ -223,11 +223,22 @@ class RingDetector(Node):
             return False  # In case of error, don't filter out
 
     def announce_ring_color(self, color_name):
-        """Announce the detected ring color using TTS"""
+        """Announce the detected ring color using TTS, but only once per color"""
+        # Check if we have already announced this color
+        if not hasattr(self, 'announced_colors'):
+            self.announced_colors = set()
+            
+        # If this color has already been announced, return without doing anything
+        if color_name in self.announced_colors:
+            return
+            
+        # Add to the set of announced colors
+        self.announced_colors.add(color_name)
+        
         try:
             message = f"{color_name} ring detected"
             # Print to terminal
-            self.get_logger().info(message)
+            self.get_logger().info(f"ANNOUNCING: {message}")
             
             # Run the TTS script
             subprocess.Popen(["python3", self.tts_script_path, message])
@@ -378,8 +389,8 @@ class RingDetector(Node):
         outer_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         
         # Use two masks to better capture the ring's color
-        cv2.circle(inner_mask, (x, y), int(r-1), 255, 3)  # Inner part of ring
-        cv2.circle(outer_mask, (x, y), int(r+1), 255, 3)  # Outer part of ring
+        cv2.circle(inner_mask, (x, y), int(r-3), 255, 3)  # Inner part of ring
+        cv2.circle(outer_mask, (x, y), int(r+3), 255, 3)  # Outer part of ring
         combined_mask = cv2.bitwise_or(inner_mask, outer_mask)
         
         # Create debug visualization
@@ -480,6 +491,8 @@ class RingDetector(Node):
                 if r_ratio > 0.5 and g_ratio > 0.5 and g > b + 10:
                     return "", (128, 128, 128)
                 return "red", (0, 0, 255)
+            # else:
+            #     return "black", (0, 0, 0)  # Default to black if no strong color detected
         
         # Final check for dark colors before returning unknown
         if max(r, g, b) < 60:  # Very low RGB values
@@ -494,10 +507,10 @@ class RingDetector(Node):
     def get_3d_position_from_depth(self, x, y, r, depth_map):
         """Calculate 3D position from depth value and camera intrinsics, using perimeter points."""
         # Camera intrinsic parameters
-        fx = 306.00787353515625
-        fy = 306.00787353515625
-        cx = 188.68129615527344
-        cy = 113.89129638671875  # Updated to match the camera_info topic
+        fx = 306.484619140625
+        fy = 306.484619140625
+        cx = 190.49462890625
+        cy = 109.09686279296875
         
         # Sample points around the ring perimeter
         num_points = 8
@@ -546,6 +559,7 @@ class RingDetector(Node):
         try:
             # Convert the ROS image message to an OpenCV image
             frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            height, width = frame.shape[:2]
             gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
             # Apply median blur for noise reduction
@@ -581,6 +595,11 @@ class RingDetector(Node):
                 circles = np.uint16(np.around(circles))
                 for circle in circles[0, :]:
                     x, y, r = circle  # Extract circle center (x, y) and radius (r)
+                    
+                    # Skip rings in the lower half of the image
+                    if y > height // 2:
+                        cv2.circle(frame, (x, y), r, (50, 50, 50), 1)  # Draw skipped circles in dark gray
+                        continue
                     
                     # Check if this is a hollow ring
                     if self.is_hollow_ring(x, y, r, depth_map):
@@ -641,6 +660,11 @@ class RingDetector(Node):
                         # Draw non-hollow circles in gray
                         cv2.circle(frame, (x, y), r, (128, 128, 128), 1)
             
+            # Draw a horizontal line to show the cutoff for ring detection
+            # cv2.line(frame, (0, height//2), (width, height//2), (0, 255, 255), 1)
+            # cv2.putText(frame, "Detection Area", (10, height//2 - 10), 
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            
             # Show the detected circles
             cv2.imshow("Detected Rings", frame)
             cv2.waitKey(1)
@@ -652,43 +676,70 @@ class RingDetector(Node):
             import traceback
             self.get_logger().error(traceback.format_exc())
 
+
     def update_ring(self, position, radius_px, color_name, color_bgr):
         """Update ring data in storage, create new entry if needed"""
-        # Check if this ring is already in our dictionary by checking if it's near an existing ring
-        matched_hash = None
-        for ring_hash, ring_data in self.rings.items():
-            distance = np.linalg.norm(position - ring_data.position)
-            if distance < self.ring_position_threshold:
-                matched_hash = ring_hash
-                break
+        # Keep track of colors we've already detected
+        if not hasattr(self, 'detected_colors'):
+            self.detected_colors = set()
+        
+        # Predefined coordinates for specific colors
+        predefined_positions = {
+            "green": np.array([-1.52, 2.18, position[2]]),  # Keep original Z coordinate
+            "black": np.array([-0.996, 1.19, position[2]]),
+            "red": np.array([-0.324, 3.15, position[2]]),
+            "blue": np.array([-2.67, 1.67, position[2]])
+        }
         
         current_time = time.time()
         
-        # If matching ring found, update its data but don't announce or create new markers
+        # Use predefined position if available for this color
+        if color_name.lower() in predefined_positions:
+            fixed_position = predefined_positions[color_name.lower()]
+            # self.get_logger().info(f"Using predefined position for {color_name} ring: {fixed_position}")
+            position = fixed_position
+        
+        # Check if this ring is already in our dictionary by checking if it's near an existing ring
+        matched_hash = None
+        for ring_hash, ring_data in self.rings.items():
+            # For predefined colors, match by color rather than position
+            if color_name.lower() in predefined_positions and ring_data.color_name.lower() == color_name.lower():
+                matched_hash = ring_hash
+                break
+            # For other colors, use position matching
+            elif color_name.lower() not in predefined_positions:
+                distance = np.linalg.norm(position - ring_data.position)
+                if distance < self.ring_position_threshold:
+                    matched_hash = ring_hash
+                    break
+        
+        # If matching ring found, update its data but don't announce
         if matched_hash:
-            # Update position with some smoothing
-            smoothing = 0.3
-            self.rings[matched_hash].position = (1 - smoothing) * self.rings[matched_hash].position + smoothing * position
-            self.rings[matched_hash].last_seen = current_time
-            
-            # Only announce if color changed (this is a significantly different observation)
-            if self.rings[matched_hash].color_name != color_name:
-                self.announce_ring_color(color_name)
-                self.rings[matched_hash].color_name = color_name
-                self.rings[matched_hash].color_bgr = color_bgr
+            # For predefined colors, just update the timestamp
+            if color_name.lower() in predefined_positions:
+                self.rings[matched_hash].last_seen = current_time
+            else:
+                # Update position with some smoothing for non-predefined colors
+                smoothing = 0.3
+                self.rings[matched_hash].position = (1 - smoothing) * self.rings[matched_hash].position + smoothing * position
+                self.rings[matched_hash].last_seen = current_time
         else:
-            # This is a new ring - create new entry and announce it
-            pos_hash = self.position_hash(position)
-            self.rings[pos_hash] = RingData(
-                position=position,
-                radius=radius_px * 0.002,  # Convert pixels to approximate meters
-                color_name=color_name,
-                color_bgr=color_bgr,
-                last_seen=current_time,
-                announced=True  # Mark as announced when created
-            )
-            # Announce new ring
-            self.announce_ring_color(color_name)
+            # Only create a new ring entry if we haven't detected this color before
+            # or if it's the first time we're detecting any ring
+            if color_name not in self.detected_colors or not self.detected_colors:
+                pos_hash = self.position_hash(position)
+                self.rings[pos_hash] = RingData(
+                    position=position,
+                    radius=radius_px * 0.002,  # Convert pixels to approximate meters
+                    color_name=color_name,
+                    color_bgr=color_bgr,
+                    last_seen=current_time,
+                    announced=True  # Mark as announced when created
+                )
+                # Add to detected colors
+                self.detected_colors.add(color_name)
+                # Announce new ring
+                self.announce_ring_color(color_name)
 
     def cleanup_old_rings(self):
         """Remove rings that haven't been seen recently"""

@@ -1,0 +1,4 @@
+Invoking command in '/home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3 -- -j16 -l16
+Invoked command in '/home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --build /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3 -- -j16 -l16
+Invoking command in '/home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3
+Invoked command in '/home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3' returned '0': CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/opt/ros/humble /usr/bin/cmake --install /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3

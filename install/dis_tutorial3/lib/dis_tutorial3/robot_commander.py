@@ -74,7 +74,7 @@ class RobotCommander(Node):
         self.current_waypoint_idx = 0
         self.tts_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
                                            "speak.py")  # Use direct path from current script
-        self.greeting_text = "Hello there!"
+        self.greeting_text = "Hi female!"
         self.current_task = None  # None, 'waypoint', or 'greeting'
  
         # ROS2 subscribers
@@ -352,7 +352,7 @@ class RobotCommander(Node):
     def _peopleMarkerCallback(self, msg: MarkerArray):
         """Handle incoming people markers"""
         self.detected_person_markers = msg
-        self.info(f"Received people markers: {len(msg.markers)}")
+        # self.info(f"Received people markers: {len(msg.markers)}")
         
         # Log the details of each marker
         for marker in msg.markers:
@@ -436,7 +436,16 @@ class RobotCommander(Node):
 
     def sayGreeting(self, text=None):
         """Use text-to-speech to say greeting"""
-        if text is None:
+        # Check if we're greeting a specific face ID
+        if hasattr(self, 'person_to_greet') and self.person_to_greet:
+            face_id = self.person_to_greet.get('face_id')
+            if face_id == 1:
+                text = "Hi male!"
+            else:
+                # Use default greeting for other face IDs
+                if text is None:
+                    text = self.greeting_text
+        elif text is None:
             text = self.greeting_text
             
         try:
@@ -556,7 +565,7 @@ def main(args=None):
     
     rc.info("Starting navigation through waypoints...")
 
-    waypoints.append(waypoints[0])  # Add the first waypoint again to return to start
+    waypoints.append(waypoints[3])  # Add the first waypoint again to return to start
     
     # Navigate to each waypoint, but check for people between waypoints
     rc.current_waypoint_idx = 0
@@ -636,13 +645,18 @@ def main(args=None):
                 rc.info(f"Reached waypoint {rc.current_waypoint_idx + 1}!")
                 
                 # Optional: spin at each waypoint to look around
-                if rc.current_waypoint_idx < len(waypoints) - 1:  # Don't spin at the last waypoint
-                    rc.info("Spinning to look around...")
+                # if rc.current_waypoint_idx < len(waypoints) - 1:  # Don't spin at the last waypoint
+                rc.info("Spinning to look around...")
+                if rc.current_waypoint_idx == 4:
+                    rc.info("Spinning -2pi degrees at the last waypoint")
+                    rc.spin(-6.28)
+                    rc.spin(-6.28)
+                else: 
                     rc.spin(6.28)  # Spin 360 degrees
-                    while not rc.isTaskComplete() and not rc.interrupt_for_greeting:
-                        rclpy.spin_once(rc, timeout_sec=0.5)
-                        time.sleep(0.5)
-                
+                while not rc.isTaskComplete() and not rc.interrupt_for_greeting:
+                    rclpy.spin_once(rc, timeout_sec=0.5)
+                    time.sleep(0.5)
+            
                 # Move to next waypoint if we weren't interrupted
                 if not rc.interrupt_for_greeting:
                     rc.current_waypoint_idx += 1

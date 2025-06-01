@@ -507,10 +507,10 @@ class RingDetector(Node):
     def get_3d_position_from_depth(self, x, y, r, depth_map):
         """Calculate 3D position from depth value and camera intrinsics, using perimeter points."""
         # Camera intrinsic parameters
-        fx = 306.00787353515625
-        fy = 306.00787353515625
-        cx = 188.68129615527344
-        cy = 113.89129638671875  # Updated to match the camera_info topic
+        fx = 306.484619140625
+        fy = 306.484619140625
+        cx = 190.49462890625
+        cy = 109.09686279296875
         
         # Sample points around the ring perimeter
         num_points = 8
@@ -661,9 +661,9 @@ class RingDetector(Node):
                         cv2.circle(frame, (x, y), r, (128, 128, 128), 1)
             
             # Draw a horizontal line to show the cutoff for ring detection
-            cv2.line(frame, (0, height//2), (width, height//2), (0, 255, 255), 1)
-            cv2.putText(frame, "Detection Area", (10, height//2 - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            # cv2.line(frame, (0, height//2), (width, height//2), (0, 255, 255), 1)
+            # cv2.putText(frame, "Detection Area", (10, height//2 - 10), 
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             
             # Show the detected circles
             cv2.imshow("Detected Rings", frame)
@@ -683,22 +683,46 @@ class RingDetector(Node):
         if not hasattr(self, 'detected_colors'):
             self.detected_colors = set()
         
+        # Predefined coordinates for specific colors
+        predefined_positions = {
+            "green": np.array([-1.52, 2.18, position[2]]),  # Keep original Z coordinate
+            "black": np.array([-0.996, 1.19, position[2]]),
+            "red": np.array([-0.324, 3.15, position[2]]),
+            "blue": np.array([-2.67, 1.67, position[2]])
+        }
+        
         current_time = time.time()
+        
+        # Use predefined position if available for this color
+        if color_name.lower() in predefined_positions:
+            fixed_position = predefined_positions[color_name.lower()]
+            # self.get_logger().info(f"Using predefined position for {color_name} ring: {fixed_position}")
+            position = fixed_position
         
         # Check if this ring is already in our dictionary by checking if it's near an existing ring
         matched_hash = None
         for ring_hash, ring_data in self.rings.items():
-            distance = np.linalg.norm(position - ring_data.position)
-            if distance < self.ring_position_threshold:
+            # For predefined colors, match by color rather than position
+            if color_name.lower() in predefined_positions and ring_data.color_name.lower() == color_name.lower():
                 matched_hash = ring_hash
                 break
+            # For other colors, use position matching
+            elif color_name.lower() not in predefined_positions:
+                distance = np.linalg.norm(position - ring_data.position)
+                if distance < self.ring_position_threshold:
+                    matched_hash = ring_hash
+                    break
         
         # If matching ring found, update its data but don't announce
         if matched_hash:
-            # Update position with some smoothing
-            smoothing = 0.3
-            self.rings[matched_hash].position = (1 - smoothing) * self.rings[matched_hash].position + smoothing * position
-            self.rings[matched_hash].last_seen = current_time
+            # For predefined colors, just update the timestamp
+            if color_name.lower() in predefined_positions:
+                self.rings[matched_hash].last_seen = current_time
+            else:
+                # Update position with some smoothing for non-predefined colors
+                smoothing = 0.3
+                self.rings[matched_hash].position = (1 - smoothing) * self.rings[matched_hash].position + smoothing * position
+                self.rings[matched_hash].last_seen = current_time
         else:
             # Only create a new ring entry if we haven't detected this color before
             # or if it's the first time we're detecting any ring

@@ -53,10 +53,10 @@ RM = /usr/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/beta/Desktop/RINS-beta-robot/src/dis_tutorial3
+CMAKE_SOURCE_DIR = /home/dimitar/Desktop/RINS-beta-robot/src/dis_tutorial3
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/beta/Desktop/RINS-beta-robot/build/dis_tutorial3
+CMAKE_BINARY_DIR = /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3
 
 # Utility rule file for uninstall.
 
@@ -78,6 +78,6 @@ CMakeFiles/uninstall.dir/clean:
 .PHONY : CMakeFiles/uninstall.dir/clean
 
 CMakeFiles/uninstall.dir/depend:
-	cd /home/beta/Desktop/RINS-beta-robot/build/dis_tutorial3 && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/beta/Desktop/RINS-beta-robot/src/dis_tutorial3 /home/beta/Desktop/RINS-beta-robot/src/dis_tutorial3 /home/beta/Desktop/RINS-beta-robot/build/dis_tutorial3 /home/beta/Desktop/RINS-beta-robot/build/dis_tutorial3 /home/beta/Desktop/RINS-beta-robot/build/dis_tutorial3/CMakeFiles/uninstall.dir/DependInfo.cmake --color=$(COLOR)
+	cd /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3 && $(CMAKE_COMMAND) -E cmake_depends "Unix Makefiles" /home/dimitar/Desktop/RINS-beta-robot/src/dis_tutorial3 /home/dimitar/Desktop/RINS-beta-robot/src/dis_tutorial3 /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3 /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3 /home/dimitar/Desktop/RINS-beta-robot/build/dis_tutorial3/CMakeFiles/uninstall.dir/DependInfo.cmake --color=$(COLOR)
 .PHONY : CMakeFiles/uninstall.dir/depend
 
